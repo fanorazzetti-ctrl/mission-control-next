@@ -71,10 +71,9 @@ export class AgentSync {
     try {
       const client = this.initClient();
       
-      await client.mutation(api.agents.updateStatus, {
-        agentName: this.agentName,
+      await client.mutation(api.teamMembers.updateStatus, {
+        name: this.agentName,
         status,
-        currentTask,
         lastActiveAt: Date.now()
       });
 
@@ -181,8 +180,8 @@ export class AgentSync {
     try {
       const client = this.initClient();
       
-      await client.mutation(api.agents.register, {
-        agentName: this.agentName,
+      await client.mutation(api.teamMembers.register, {
+        name: this.agentName,
         role: 'assistant',
         capabilities,
         status: 'idle'

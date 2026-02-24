@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import { useQuery, useMutation } from "convex/react";
-import { api } from "../../convex/_generated/api";
-import { Id } from "../../convex/_generated/dataModel";
+import { api } from "@convex/_generated/api";
+import { Id } from "@convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -26,7 +26,7 @@ export default function TasksPage() {
 
   // Convex queries
   const tasks = useQuery(api.tasks.list) || [];
-  const agents = useQuery(api.agents.list) || [];
+  const agents = useQuery(api.teamMembers.list) || [];
 
   // Convex mutations
   const createTask = useMutation(api.tasks.create);

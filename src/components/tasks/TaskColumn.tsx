@@ -1,6 +1,6 @@
 "use client";
 
-import { useDroppable } from "@dnd-kit/droppable";
+import { useDroppable } from "@dnd-kit/core";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Task, TaskCard } from "./TaskCard";
 

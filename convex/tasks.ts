@@ -194,11 +194,28 @@ export const updateStatus = mutation({
     }
     
     const now = Date.now();
-    await ctx.db.patch(args.taskId, {
+    const updates: any = {
       status: args.status,
       updatedAt: now,
-      completedAt: args.status === "done" ? now : undefined,
-    });
+    };
+    
+    // 如果状态变为 in_progress，设置 startedAt 和 lastProgressAt
+    if (args.status === "in_progress") {
+      updates.startedAt = now;
+      updates.lastProgressAt = now;
+      // 如果没有设置 timeoutMinutes，使用默认值
+      if (!task.timeoutMinutes) {
+        updates.timeoutMinutes = 120;
+      }
+    }
+    
+    // 如果状态变为 done，设置 completedAt 和 progress
+    if (args.status === "done") {
+      updates.completedAt = now;
+      updates.progress = 100;
+    }
+    
+    await ctx.db.patch(args.taskId, updates);
     
     // 记录活动日志
     await ctx.db.insert("taskActivityLogs", {
@@ -1393,5 +1410,189 @@ export const autoAggregate = mutation({
       aggregatedCount: aggregatedTasks.length,
       aggregatedTasks,
     };
+  },
+});
+
+// ============================================================================
+// 闭环验证机制 (2026-02-24)
+// ============================================================================
+
+/**
+ * 验证任务完成结果
+ * 
+ * 验证失败 → 重新进入 todo
+ * 验证通过 → done
+ */
+export const verifyTask = mutation({
+  args: { 
+    taskId: v.id("tasks"),
+    verificationResult: v.string(),
+    passed: v.boolean(),
+    actorId: v.optional(v.string()),
+    actorName: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await ctx.auth.getUserId();
+    if (!userId) throw new Error("Unauthorized: Please log in");
+    
+    const task = await ctx.db.get(args.taskId);
+    if (!task) {
+      return { success: false, error: "Task not found" };
+    }
+    
+    const now = Date.now();
+    const newAttemptCount = (task.verificationAttempts || 0) + 1;
+    
+    // 更新验证状态
+    await ctx.db.patch(args.taskId, {
+      verificationStatus: args.passed ? "passed" : "failed",
+      verificationResult: args.verificationResult,
+      verificationAttempts: newAttemptCount,
+      updatedAt: now,
+    });
+    
+    if (args.passed) {
+      // 验证通过 → done
+      await ctx.db.patch(args.taskId, {
+        status: "done",
+        completedAt: now,
+        progress: 100,
+      });
+      
+      console.log(`✅ Task ${args.taskId} verified successfully (attempt ${newAttemptCount})`);
+    } else {
+      // 验证失败 → 重新进入 todo
+      await ctx.db.patch(args.taskId, {
+        status: "todo",
+        progress: 0,
+      });
+      
+      console.log(`❌ Task ${args.taskId} verification failed (attempt ${newAttemptCount})`);
+      
+      // 如果验证失败超过 3 次，标记为需要人工介入
+      if (newAttemptCount >= 3) {
+        const currentTags = task.tags || [];
+        if (!currentTags.includes("needs-human-intervention")) {
+          await ctx.db.patch(args.taskId, {
+            tags: [...currentTags, "needs-human-intervention", "verification-failed"],
+          });
+          console.log(`⚠️ Task ${args.taskId} marked for human intervention after ${newAttemptCount} failed attempts`);
+        }
+      }
+    }
+    
+    // 记录活动日志
+    await ctx.db.insert("taskActivityLogs", {
+      taskId: args.taskId,
+      action: args.passed ? "verified" : "verification_failed",
+      actorId: args.actorId || "system",
+      actorName: args.actorName || "System",
+      details: JSON.stringify({ 
+        passed: args.passed, 
+        result: args.verificationResult,
+        attempt: newAttemptCount 
+      }),
+      createdAt: now,
+    });
+    
+    // 如果是子任务，更新父任务进度
+    if (task.parentId) {
+      await updateParentProgress(ctx, task.parentId);
+    }
+    
+    return { 
+      success: true, 
+      passed: args.passed,
+      attempts: newAttemptCount,
+    };
+  },
+});
+
+/**
+ * 查询需要验证的任务
+ */
+export const getTasksNeedingVerification = query({
+  args: {
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await ctx.auth.getUserId();
+    if (!userId) throw new Error("Unauthorized: Please log in");
+    
+    const allTasks = await ctx.db.query("tasks").collect();
+    const needsVerification = allTasks.filter(t => 
+      t.status === "done" && 
+      t.verificationStatus !== "passed"
+    );
+    
+    return needsVerification.slice(0, args.limit || 10);
+  },
+});
+
+/**
+ * 获取验证统计
+ */
+export const getVerificationStats = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await ctx.auth.getUserId();
+    if (!userId) throw new Error("Unauthorized: Please log in");
+    
+    const allTasks = await ctx.db.query("tasks").collect();
+    
+    const stats = {
+      total: allTasks.length,
+      verified: allTasks.filter(t => t.verificationStatus === "passed").length,
+      failed: allTasks.filter(t => t.verificationStatus === "failed").length,
+      pending: allTasks.filter(t => t.verificationStatus === "pending" || !t.verificationStatus).length,
+      needsHumanIntervention: allTasks.filter(t => t.tags?.includes("needs-human-intervention")).length,
+    };
+    
+    return stats;
+  },
+});
+
+/**
+ * 标记任务完成并触发验证
+ * 
+ * 任务执行完成后调用此函数，自动进入验证流程
+ */
+export const completeTaskAndVerify = mutation({
+  args: {
+    taskId: v.id("tasks"),
+    actorId: v.optional(v.string()),
+    actorName: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const userId = await ctx.auth.getUserId();
+    if (!userId) throw new Error("Unauthorized: Please log in");
+    
+    const task = await ctx.db.get(args.taskId);
+    if (!task) {
+      return { success: false, error: "Task not found" };
+    }
+    
+    const now = Date.now();
+    
+    // 更新状态为 done，但 verificationStatus 为 pending
+    await ctx.db.patch(args.taskId, {
+      status: "done",
+      completedAt: now,
+      progress: 100,
+      verificationStatus: "pending",
+      updatedAt: now,
+    });
+    
+    // 记录活动日志
+    await ctx.db.insert("taskActivityLogs", {
+      taskId: args.taskId,
+      action: "completed_pending_verification",
+      actorId: args.actorId || "system",
+      actorName: args.actorName || "System",
+      details: JSON.stringify({}),
+      createdAt: now,
+    });
+    
+    return { success: true };
   },
 });

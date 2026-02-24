@@ -1,0 +1,6 @@
+{
+  "maxParallelAgents": 3,
+  "autoDecompose": true,
+  "autoAggregate": true,
+  "taskTypes": ["complex", "swarm_task", "bounty", "multi_agent"]
+}
