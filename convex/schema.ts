@@ -48,6 +48,24 @@ export default defineSchema({
     tags: v.optional(v.array(v.string())), // 标签
     attachments: v.optional(v.array(v.string())), // 附件 URL
     
+    // 新增字段 - 任务来源和幂等检查 (2026-02-24)
+    source: v.optional(v.union(
+      v.literal("github"),
+      v.literal("evolution"),
+      v.literal("heartbeat"),
+      v.literal("manual")
+    )), // 任务来源
+    contentHash: v.optional(v.string()), // 幂等检查 hash
+    
+    // 新增字段 - 验证相关 (2026-02-24)
+    verificationStatus: v.optional(v.union(
+      v.literal("pending"), // 待验证
+      v.literal("passed"), // 验证通过
+      v.literal("failed") // 验证失败
+    )),
+    verificationResult: v.optional(v.string()), // 验证结果详情
+    verificationAttempts: v.number(), // 验证尝试次数
+    
     // 时间戳
     createdAt: v.number(),
     updatedAt: v.number(),
@@ -69,6 +87,9 @@ export default defineSchema({
     .index("by_assignee", ["assigneeId"])
     .index("by_parent", ["parentId"]) // 子任务查询
     .index("by_acceptance", ["acceptanceStatus"])
+    .index("by_source", ["source"]) // 按来源查询
+    .index("by_content_hash", ["contentHash"]) // 幂等检查
+    .index("by_verification", ["verificationStatus"]) // 验证状态查询
     .index("by_agent_type", ["agentType"]),
 
   // 2. Calendar / Scheduled Tasks (日历/定时任务)
